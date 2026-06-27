@@ -126,7 +126,7 @@ jobs:
             PROMPT="professional+news+photo+${CLEAN_TITLE}+realistic+high+quality+dramatic"
             POLLINATIONS_URL="https://image.pollinations.ai/prompt/${PROMPT}?width=720&height=1280&nologo=true&seed=42"
             echo "Pollinations: $POLLINATIONS_URL"
-            curl -s -L --max-time 30 --retry 2 \
+            curl -s -L --max-time 60 --retry 2 \
               -A "Mozilla/5.0" \
               -o /tmp/bg_raw.jpg "$POLLINATIONS_URL" 2>/dev/null
             FILESIZE=$(stat -c%s /tmp/bg_raw.jpg 2>/dev/null || echo 0)
