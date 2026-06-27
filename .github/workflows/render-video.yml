@@ -70,7 +70,7 @@ jobs:
           ffmpeg -y -f lavfi \
             -i "aevalsrc=0.2*sin(330*2*PI*t)+0.15*sin(660*2*PI*t)+0.1*sin(990*2*PI*t)+0.05*sin(1320*2*PI*t):s=44100" \
             -t 35 \
-            -af "afade=t=in:st=0:d=3,afade=t=out:st=32:d=3,volume=0.2" \
+            -af "afade=t=in:st=0:d=3,afade=t=out:st=32:d=3,volume=0.6" \
             /tmp/audio/bg_music.mp3 -y 2>/dev/null
           echo "Music generated: $(stat -c%s /tmp/audio/bg_music.mp3) bytes"
 
@@ -126,7 +126,7 @@ jobs:
           # Create base - with image or gradient
           if [ "$BG_OK" = true ]; then
             convert /tmp/bg_ready.jpg \
-              -fill "rgba(0,0,0,0.7)" -draw "rectangle 0,0 720,1280" \
+              -fill "rgba(0,0,0,0.35)" -draw "rectangle 0,0 720,1280" \
               /tmp/slide1_base.jpg
           else
             convert -size 720x1280 gradient:"${ACCENT}"-"${DARK}" \
@@ -368,7 +368,7 @@ jobs:
             -vf "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=25" \
             -c:v libx264 -preset fast -crf 22 -pix_fmt yuv420p \
             -c:a aac -b:a 128k \
-            -af "volume=0.2,afade=t=out:st=22:d=2" \
+            -af "volume=0.5,afade=t=out:st=22:d=2" \
             -shortest \
             -movflags +faststart \
             /tmp/output/video.mp4
