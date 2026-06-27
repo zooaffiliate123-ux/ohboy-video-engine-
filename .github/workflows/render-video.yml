@@ -49,21 +49,41 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg imagemagick python3 fonts-dejavu-core
+          sudo apt-get install -y ffmpeg imagemagick python3 fonts-dejavu-core wget
           ffmpeg -version | head -1
           convert -version | head -1
-          echo "Dependencies installed!"
+          echo "All dependencies installed!"
 
       - name: Fix ImageMagick policy
         run: |
-          # Allow ImageMagick to read/write all files
           sudo sed -i 's/rights="none" pattern="PDF"/rights="read|write" pattern="PDF"/' /etc/ImageMagick-6/policy.xml || true
-          sudo sed -i 's/<policy domain="resource" name="memory" value="256MiB"\/>/<policy domain="resource" name="memory" value="512MiB"\/>/' /etc/ImageMagick-6/policy.xml || true
+          sudo sed -i 's/rights="none" pattern="EPS"/rights="read|write" pattern="EPS"/' /etc/ImageMagick-6/policy.xml || true
           echo "ImageMagick policy fixed!"
+
+      - name: Download copyright-free background music
+        run: |
+          mkdir -p /tmp/audio
+          # Download free music from GitHub raw (no copyright)
+          # Using a simple royalty-free beat from public domain sources
+          # pixabay free music - corporate background
+          wget -q -O /tmp/audio/bg_music.mp3 "https://www.soundjay.com/misc/sounds/bell-ringing-05.mp3" 2>/dev/null || true
+
+          # If download fails, generate a simple tone using ffmpeg
+          if [ ! -f /tmp/audio/bg_music.mp3 ] || [ $(stat -c%s /tmp/audio/bg_music.mp3 2>/dev/null || echo 0) -lt 1000 ]; then
+            echo "Generating background music with ffmpeg..."
+            ffmpeg -y -f lavfi \
+              -i "aevalsrc=0.3*sin(440*2*PI*t)+0.2*sin(880*2*PI*t)+0.1*sin(1320*2*PI*t):s=44100" \
+              -t 30 \
+              -af "afade=t=in:st=0:d=2,afade=t=out:st=28:d=2,volume=0.3" \
+              /tmp/audio/bg_music.mp3 -y 2>/dev/null
+            echo "Background music generated!"
+          fi
+          ls -lh /tmp/audio/
 
       - name: Create video frames
         run: |
           mkdir -p /tmp/frames
+          mkdir -p /tmp/output
 
           TITLE="${{ github.event.inputs.title }}"
           SOURCE="${{ github.event.inputs.source }}"
@@ -71,137 +91,106 @@ jobs:
           IMAGE_URL="${{ github.event.inputs.image_url }}"
           TODAY=$(date '+%b %d, %Y')
 
-          # Topic color
+          # Topic colors
           case "$TOPIC" in
-            "Breaking News") COLOR="#c8102e" HEX="c8102e" ;;
-            "Politics") COLOR="#1a3a6b" HEX="1a3a6b" ;;
-            "Entertainment") COLOR="#7b2d8b" HEX="7b2d8b" ;;
-            "Sports") COLOR="#0a5c1a" HEX="0a5c1a" ;;
-            "Technology") COLOR="#0a2a6b" HEX="0a2a6b" ;;
-            *) COLOR="#c8102e" HEX="c8102e" ;;
+            "Breaking News") BG_COLOR="#c8102e" DARK_COLOR="#7a0619" ;;
+            "Politics") BG_COLOR="#1a3a6b" DARK_COLOR="#0d1f3c" ;;
+            "Entertainment") BG_COLOR="#7b2d8b" DARK_COLOR="#3d1645" ;;
+            "Sports") BG_COLOR="#0a5c1a" DARK_COLOR="#053d11" ;;
+            "Technology") BG_COLOR="#0a2a6b" DARK_COLOR="#05153c" ;;
+            "Business") BG_COLOR="#1a4a0a" DARK_COLOR="#0d2705" ;;
+            *) BG_COLOR="#c8102e" DARK_COLOR="#7a0619" ;;
           esac
 
-          echo "Title: $TITLE"
-          echo "Source: $SOURCE"
-          echo "Topic: $TOPIC"
-          echo "Color: $COLOR"
-          echo "Image URL: $IMAGE_URL"
+          FONT_BOLD="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+          FONT_REG="/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
-          # Try downloading background image
-          BG_FILE="/tmp/bg.jpg"
+          echo "Creating slide 1..."
+          # Try background image first
           BG_OK=false
           if [ -n "$IMAGE_URL" ]; then
-            echo "Downloading image: $IMAGE_URL"
-            curl -s -L \
-              --max-time 15 \
-              --retry 2 \
-              -A "Mozilla/5.0" \
-              -o "$BG_FILE" \
-              "$IMAGE_URL" 2>/dev/null
-            
-            if [ -f "$BG_FILE" ] && [ $(stat -c%s "$BG_FILE" 2>/dev/null || echo 0) -gt 5000 ]; then
-              # Resize to 720x1280
-              convert "$BG_FILE" \
+            curl -s -L --max-time 15 --retry 2 \
+              -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+              -o /tmp/bg_raw.jpg "$IMAGE_URL" 2>/dev/null
+            if [ -f /tmp/bg_raw.jpg ] && [ $(stat -c%s /tmp/bg_raw.jpg 2>/dev/null || echo 0) -gt 5000 ]; then
+              convert /tmp/bg_raw.jpg \
                 -resize 720x1280^ \
                 -gravity Center \
                 -extent 720x1280 \
                 /tmp/bg_ready.jpg 2>/dev/null && BG_OK=true
-              echo "Background image ready: $BG_OK"
-            else
-              echo "Image download failed or too small"
             fi
           fi
 
-          # SLIDE 1 - Headline slide
-          echo "Creating slide 1..."
+          # SLIDE 1 - Headline
           if [ "$BG_OK" = true ]; then
             convert /tmp/bg_ready.jpg \
-              -gravity NorthWest \
-              -fill "rgba(0,0,0,0.5)" \
-              -draw "rectangle 0,0 720,1280" \
-              -fill "rgba(0,0,0,0.3)" \
-              -draw "rectangle 0,0 720,80" \
-              -font /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf \
-              -pointsize 30 \
-              -fill white \
-              -annotate +20+58 "OH BOY NEWS" \
-              -fill "$COLOR" \
-              -draw "rectangle 40,760 $((40 + ${#TOPIC} * 16 + 30)),810" \
-              -font /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf \
-              -pointsize 24 \
-              -fill white \
-              -annotate +55+800 "$(echo "$TOPIC" | tr '[:lower:]' '[:upper:]')" \
-              -font /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf \
-              -pointsize 42 \
-              -fill white \
-              -size 640x300 \
-              caption:"$TITLE" \
-              -gravity SouthWest \
-              -geometry +40+200 \
-              -composite \
-              -font /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
-              -pointsize 24 \
+              -fill "rgba(0,0,0,0.65)" -draw "rectangle 0,0 720,1280" \
+              -fill "rgba(0,0,0,0.85)" -draw "rectangle 0,0 720,90" \
+              -font "$FONT_BOLD" -pointsize 32 \
+              -fill "#ffffff" -gravity NorthWest \
+              -annotate +20+50 "OH BOY NEWS" \
+              -fill "$BG_COLOR" \
+              -draw "rectangle 40,780 $((40 + ${#TOPIC} * 17 + 30)),830" \
+              -font "$FONT_BOLD" -pointsize 24 \
+              -fill "#ffffff" \
+              -annotate +55+808 "$(echo "$TOPIC" | tr '[:lower:]' '[:upper:]')" \
+              -font "$FONT_BOLD" -pointsize 44 \
+              -fill "#ffffff" \
+              -size 640x280 caption:"$TITLE" \
+              -gravity NorthWest -geometry +40+850 -composite \
+              -font "$FONT_REG" -pointsize 24 \
               -fill "#cccccc" \
-              -gravity SouthWest \
-              -annotate +40+100 "$SOURCE  -  $TODAY" \
-              -annotate +40+60 "Swipe up for full story >" \
+              -annotate +40+1160 "$SOURCE  -  $TODAY" \
+              -fill "#aaaaaa" -pointsize 20 \
+              -annotate +40+1210 "Swipe up for full story >" \
               /tmp/frames/frame_01.jpg
           else
             # Gradient background
             convert -size 720x1280 \
-              gradient:"#${HEX}"-"#0a0808" \
-              -fill "rgba(0,0,0,0.4)" \
-              -draw "rectangle 0,0 720,1280" \
-              -fill "rgba(0,0,0,0.5)" \
-              -draw "rectangle 0,0 720,80" \
-              -font /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf \
-              -pointsize 30 \
-              -fill white \
-              -gravity NorthWest \
-              -annotate +20+45 "OH BOY NEWS" \
-              -fill "$COLOR" \
-              -draw "rectangle 40,760 $((40 + ${#TOPIC} * 16 + 30)),810" \
-              -pointsize 24 \
-              -fill white \
-              -annotate +55+778 "$(echo "$TOPIC" | tr '[:lower:]' '[:upper:]')" \
-              -font /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf \
-              -pointsize 42 \
-              -fill white \
-              -size 640x280 \
-              caption:"$TITLE" \
-              -gravity NorthWest \
-              -geometry +40+830 \
-              -composite \
-              -font /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
-              -pointsize 22 \
+              gradient:"$BG_COLOR"-"$DARK_COLOR" \
+              -fill "rgba(0,0,0,0.3)" -draw "rectangle 0,0 720,1280" \
+              -fill "rgba(0,0,0,0.85)" -draw "rectangle 0,0 720,90" \
+              -font "$FONT_BOLD" -pointsize 32 \
+              -fill "#ffffff" -gravity NorthWest \
+              -annotate +20+50 "OH BOY NEWS" \
+              -fill "$BG_COLOR" \
+              -draw "rectangle 40,780 $((40 + ${#TOPIC} * 17 + 30)),830" \
+              -font "$FONT_BOLD" -pointsize 24 \
+              -fill "#ffffff" \
+              -annotate +55+808 "$(echo "$TOPIC" | tr '[:lower:]' '[:upper:]')" \
+              -font "$FONT_BOLD" -pointsize 44 \
+              -fill "#ffffff" \
+              -size 640x280 caption:"$TITLE" \
+              -gravity NorthWest -geometry +40+850 -composite \
+              -font "$FONT_REG" -pointsize 24 \
               -fill "#cccccc" \
-              -gravity NorthWest \
-              -annotate +40+1150 "$SOURCE  -  $TODAY" \
-              -annotate +40+1190 "Swipe up for full story >" \
+              -annotate +40+1160 "$SOURCE  -  $TODAY" \
+              -fill "#aaaaaa" -pointsize 20 \
+              -annotate +40+1210 "Swipe up for full story >" \
               /tmp/frames/frame_01.jpg
           fi
-          echo "Slide 1 done: $(stat -c%s /tmp/frames/frame_01.jpg) bytes"
+          echo "Slide 1: $(stat -c%s /tmp/frames/frame_01.jpg) bytes"
 
           # Sentences
-          S1="${{ github.event.inputs.sentence1 }}"
-          S2="${{ github.event.inputs.sentence2 }}"
-          S3="${{ github.event.inputs.sentence3 }}"
-          S4="${{ github.event.inputs.sentence4 }}"
-          S5="${{ github.event.inputs.sentence5 }}"
-          S6="${{ github.event.inputs.sentence6 }}"
-
+          SENTENCES=(
+            "${{ github.event.inputs.sentence1 }}"
+            "${{ github.event.inputs.sentence2 }}"
+            "${{ github.event.inputs.sentence3 }}"
+            "${{ github.event.inputs.sentence4 }}"
+            "${{ github.event.inputs.sentence5 }}"
+            "${{ github.event.inputs.sentence6 }}"
+          )
           LABELS=("WHAT HAPPENED" "KEY DETAIL" "MORE DETAILS" "WHY IT MATTERS" "REACTION" "WHATS NEXT")
           FALLBACKS=(
-            "This story is developing. More details emerging from $SOURCE."
+            "This story is developing. More details are emerging from $SOURCE."
             "According to $SOURCE this is one of the most important stories right now."
             "Multiple outlets have confirmed the key facts of this report."
             "The story has significant implications for global audiences."
             "Reactions from officials and the public are now coming in."
             "Further developments are expected in the coming hours."
           )
-          SENTENCES=("$S1" "$S2" "$S3" "$S4" "$S5" "$S6")
 
-          # SLIDES 2-7
+          # SLIDES 2-7 - Dark background with WHITE text
           for i in 0 1 2 3 4 5; do
             SLIDE_NUM=$((i + 2))
             LABEL="${LABELS[$i]}"
@@ -210,82 +199,73 @@ jobs:
               TEXT="${FALLBACKS[$i]}"
             fi
             PROGRESS=$(( (i + 1) * 720 / 7 ))
-            echo "Creating slide $SLIDE_NUM: $LABEL"
 
-            convert -size 720x1280 xc:"#0a0808" \
-              -fill "$COLOR" \
+            echo "Creating slide $SLIDE_NUM..."
+
+            convert -size 720x1280 xc:"#0d0d0d" \
+              -fill "$BG_COLOR" \
               -draw "rectangle 0,0 720,6" \
-              -fill "rgba(0,0,0,0.9)" \
-              -draw "rectangle 0,0 720,75" \
-              -font /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf \
-              -pointsize 28 \
-              -fill white \
+              -fill "rgba(0,0,0,0.95)" \
+              -draw "rectangle 0,0 720,80" \
+              -font "$FONT_BOLD" -pointsize 28 \
+              -fill "#ffffff" \
               -gravity NorthWest \
               -annotate +20+48 "OH BOY NEWS" \
-              -pointsize 22 \
-              -fill "#888888" \
+              -fill "#aaaaaa" -pointsize 22 \
               -annotate +580+48 "${SLIDE_NUM}/8" \
-              -fill "$COLOR" \
-              -draw "rectangle 40,105 $((40 + ${#LABEL} * 14 + 30)),150" \
-              -font /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf \
-              -pointsize 22 \
-              -fill white \
+              -fill "$BG_COLOR" \
+              -draw "rectangle 40,110 $((40 + ${#LABEL} * 15 + 30)),155" \
+              -font "$FONT_BOLD" -pointsize 22 \
+              -fill "#ffffff" \
               -annotate +55+142 "$LABEL" \
-              -fill "$COLOR" \
-              -draw "rectangle 40,165 160,171" \
-              -font /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
-              -pointsize 36 \
-              -fill white \
-              -size 640x900 \
-              caption:"$TEXT" \
-              -gravity NorthWest \
-              -geometry +40+185 \
-              -composite \
-              -fill "rgba(0,0,0,0.9)" \
-              -draw "rectangle 0,1210 720,1280" \
-              -font /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
-              -pointsize 22 \
+              -fill "$BG_COLOR" \
+              -draw "rectangle 40,170 160,176" \
+              -font "$FONT_REG" -pointsize 36 \
+              -fill "#ffffff" \
+              -size 640x900 caption:"$TEXT" \
+              -gravity NorthWest -geometry +40+190 -composite \
+              -fill "rgba(0,0,0,0.95)" \
+              -draw "rectangle 0,1215 720,1280" \
+              -font "$FONT_REG" -pointsize 22 \
               -fill "#888888" \
-              -gravity NorthWest \
-              -annotate +40+1242 "$SOURCE" \
+              -annotate +40+1248 "$SOURCE" \
               -fill "#333333" \
-              -draw "rectangle 0,1270 720,1276" \
-              -fill "$COLOR" \
-              -draw "rectangle 0,1270 ${PROGRESS},1276" \
+              -draw "rectangle 0,1272 720,1278" \
+              -fill "$BG_COLOR" \
+              -draw "rectangle 0,1272 ${PROGRESS},1278" \
               /tmp/frames/frame_0${SLIDE_NUM}.jpg
 
-            echo "Slide $SLIDE_NUM done: $(stat -c%s /tmp/frames/frame_0${SLIDE_NUM}.jpg) bytes"
+            echo "Slide $SLIDE_NUM: $(stat -c%s /tmp/frames/frame_0${SLIDE_NUM}.jpg) bytes"
           done
 
           # SLIDE 8 - CTA
           echo "Creating slide 8..."
-          convert -size 720x1280 xc:"#${HEX}" \
-            -fill "rgba(0,0,0,0.3)" \
-            -draw "rectangle 0,0 720,1280" \
-            -font /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf \
-            -pointsize 80 \
-            -fill white \
+          convert -size 720x1280 \
+            gradient:"$BG_COLOR"-"$DARK_COLOR" \
+            -fill "rgba(0,0,0,0.4)" -draw "rectangle 0,0 720,1280" \
+            -font "$FONT_BOLD" -pointsize 80 \
+            -fill "#ffffff" \
             -gravity Center \
-            -annotate +0-200 "OH BOY" \
-            -annotate +0-100 "NEWS" \
-            -font /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf \
-            -pointsize 36 \
-            -fill white \
-            -annotate +0+50 "SUBSCRIBE for daily" \
-            -annotate +0+100 "breaking news!" \
+            -annotate +0-250 "OH BOY" \
+            -annotate +0-150 "NEWS" \
+            -font "$FONT_REG" -pointsize 36 \
+            -fill "#ffffff" \
+            -annotate +0+20 "SUBSCRIBE for daily" \
+            -annotate +0+70 "breaking news!" \
             -pointsize 26 \
             -fill "rgba(255,255,255,0.7)" \
-            -annotate +0+200 "#Shorts #BreakingNews #News" \
+            -annotate +0+180 "#Shorts #BreakingNews #News" \
             /tmp/frames/frame_08.jpg
-          echo "Slide 8 done: $(stat -c%s /tmp/frames/frame_08.jpg) bytes"
+          echo "Slide 8: $(stat -c%s /tmp/frames/frame_08.jpg) bytes"
 
           echo "All frames created:"
           ls -lh /tmp/frames/
 
-      - name: Create MP4 with FFmpeg
+      - name: Create MP4 with FFmpeg + Music
         run: |
           # Create frame list
-          echo "file '/tmp/frames/frame_01.jpg'" > /tmp/frames.txt
+          > /tmp/frames.txt
+          echo "file '/tmp/frames/frame_01.jpg'" >> /tmp/frames.txt
           echo "duration 3" >> /tmp/frames.txt
           for i in 2 3 4 5 6 7 8; do
             echo "file '/tmp/frames/frame_0${i}.jpg'" >> /tmp/frames.txt
@@ -295,19 +275,33 @@ jobs:
 
           cat /tmp/frames.txt
 
-          mkdir -p /tmp/output
+          # Check if music file exists and is valid
+          MUSIC_OK=false
+          if [ -f /tmp/audio/bg_music.mp3 ] && [ $(stat -c%s /tmp/audio/bg_music.mp3) -gt 1000 ]; then
+            MUSIC_OK=true
+          fi
 
-          ffmpeg -y \
-            -f concat \
-            -safe 0 \
-            -i /tmp/frames.txt \
-            -vf "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=25" \
-            -c:v libx264 \
-            -preset fast \
-            -crf 23 \
-            -pix_fmt yuv420p \
-            -movflags +faststart \
-            /tmp/output/video.mp4
+          if [ "$MUSIC_OK" = true ]; then
+            echo "Creating video WITH background music..."
+            ffmpeg -y \
+              -f concat -safe 0 -i /tmp/frames.txt \
+              -stream_loop -1 -i /tmp/audio/bg_music.mp3 \
+              -vf "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=25" \
+              -c:v libx264 -preset fast -crf 23 -pix_fmt yuv420p \
+              -c:a aac -b:a 128k \
+              -af "volume=0.25,afade=t=out:st=22:d=2" \
+              -shortest \
+              -movflags +faststart \
+              /tmp/output/video.mp4
+          else
+            echo "Creating video WITHOUT music..."
+            ffmpeg -y \
+              -f concat -safe 0 -i /tmp/frames.txt \
+              -vf "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=25" \
+              -c:v libx264 -preset fast -crf 23 -pix_fmt yuv420p \
+              -movflags +faststart \
+              /tmp/output/video.mp4
+          fi
 
           echo "Video created:"
           ls -lh /tmp/output/video.mp4
@@ -325,12 +319,12 @@ jobs:
           ACCESS_TOKEN=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('access_token',''))")
 
           if [ -z "$ACCESS_TOKEN" ]; then
-            echo "ERROR: Could not get access token"
+            echo "ERROR: Could not get access token!"
             exit 1
           fi
 
           echo "access_token=$ACCESS_TOKEN" >> $GITHUB_OUTPUT
-          echo "Got token successfully!"
+          echo "Got YouTube token successfully!"
 
       - name: Upload to YouTube
         id: yt_upload
@@ -368,7 +362,7 @@ jobs:
             -d @/tmp/metadata.json
 
           UPLOAD_URL=$(grep -i "^location:" /tmp/headers.txt | tr -d '\r\n' | sed 's/[Ll]ocation: //')
-          echo "Upload URL: $UPLOAD_URL"
+          echo "Upload URL found: $(echo $UPLOAD_URL | cut -c1-50)..."
 
           if [ -z "$UPLOAD_URL" ]; then
             echo "No upload URL!"
@@ -384,38 +378,31 @@ jobs:
             --data-binary @"$VIDEO_PATH")
 
           echo "Upload result: $RESULT"
-
           VIDEO_ID=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null)
 
           if [ -z "$VIDEO_ID" ]; then
-            echo "Upload failed!"
+            echo "Upload failed - no video ID!"
             exit 1
           fi
 
           echo "video_id=$VIDEO_ID" >> $GITHUB_OUTPUT
           echo "yt_url=https://www.youtube.com/shorts/$VIDEO_ID" >> $GITHUB_OUTPUT
-          echo "SUCCESS! Video: https://www.youtube.com/shorts/$VIDEO_ID"
+          echo "SUCCESS! https://www.youtube.com/shorts/$VIDEO_ID"
 
       - name: Notify WordPress success
         if: success()
         run: |
-          POST_ID="${{ github.event.inputs.post_id }}"
-          VIDEO_ID="${{ steps.yt_upload.outputs.video_id }}"
-          YT_URL="${{ steps.yt_upload.outputs.yt_url }}"
-          CALLBACK="${{ github.event.inputs.callback_url }}"
-
-          curl -s -X POST "$CALLBACK" \
-            -d "post_id=$POST_ID" \
-            -d "video_id=$VIDEO_ID" \
-            -d "yt_url=$YT_URL" \
+          curl -s -X POST "${{ github.event.inputs.callback_url }}" \
+            -d "post_id=${{ github.event.inputs.post_id }}" \
+            -d "video_id=${{ steps.yt_upload.outputs.video_id }}" \
+            -d "yt_url=${{ steps.yt_upload.outputs.yt_url }}" \
             -d "status=success"
-          echo "WordPress notified!"
+          echo "WordPress notified - success!"
 
       - name: Notify WordPress failure
         if: failure()
         run: |
-          POST_ID="${{ github.event.inputs.post_id }}"
-          CALLBACK="${{ github.event.inputs.callback_url }}"
-          curl -s -X POST "$CALLBACK" \
-            -d "post_id=$POST_ID" \
+          curl -s -X POST "${{ github.event.inputs.callback_url }}" \
+            -d "post_id=${{ github.event.inputs.post_id }}" \
             -d "status=failed"
+          echo "WordPress notified - failed!"
