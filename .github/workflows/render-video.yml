@@ -49,7 +49,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg imagemagick python3 fonts-dejavu-core wget
+          sudo apt-get install -y ffmpeg imagemagick python3 fonts-dejavu-core wget curl
           echo "Done!"
 
       - name: Fix ImageMagick policy
@@ -58,22 +58,69 @@ jobs:
           sudo sed -i 's/rights="none" pattern="EPS"/rights="read|write" pattern="EPS"/' /etc/ImageMagick-6/policy.xml || true
           echo "Policy fixed!"
 
-      - name: Generate soft background music
+      - name: Download music and background image
         run: |
-          mkdir -p /tmp/audio
-          ffmpeg -y -f lavfi \
-            -i "aevalsrc=0.1*sin(110*2*PI*t)+0.07*sin(165*2*PI*t)+0.05*sin(220*2*PI*t):s=44100" \
-            -t 35 \
-            -af "afade=t=in:st=0:d=5,afade=t=out:st=30:d=5,volume=0.3,lowpass=f=500" \
-            /tmp/audio/bg_music.mp3 -y 2>/dev/null
-          echo "Music done!"
+          mkdir -p /tmp/audio /tmp/bg
+
+          # ============================================================
+          # MUSIC - Download free lofi music from pixabay (no copyright)
+          # ============================================================
+          echo "Downloading background music..."
+          
+          # Try multiple free music sources
+          MUSIC_OK=false
+          
+          # Source 1: Free music archive
+          curl -s -L --max-time 30 \
+            -A "Mozilla/5.0" \
+            -o /tmp/audio/bg_music.mp3 \
+            "https://files.freemusicarchive.org/storage-freemusicarchive-org/music/no_curator/Kai_Engel/Satin/Kai_Engel_-_04_-_Sentinel.mp3" 2>/dev/null
+          
+          MSIZE=$(stat -c%s /tmp/audio/bg_music.mp3 2>/dev/null || echo 0)
+          echo "Music source 1: $MSIZE bytes"
+          
+          if [ "$MSIZE" -gt 10000 ]; then
+            MUSIC_OK=true
+            echo "Music ready from source 1!"
+          fi
+
+          # Source 2: Another free source
+          if [ "$MUSIC_OK" = false ]; then
+            curl -s -L --max-time 30 \
+              -A "Mozilla/5.0" \
+              -o /tmp/audio/bg_music.mp3 \
+              "https://www.bensound.com/bensound-music/bensound-relaxing.mp3" 2>/dev/null
+            MSIZE=$(stat -c%s /tmp/audio/bg_music.mp3 2>/dev/null || echo 0)
+            echo "Music source 2: $MSIZE bytes"
+            if [ "$MSIZE" -gt 10000 ]; then
+              MUSIC_OK=true
+              echo "Music ready from source 2!"
+            fi
+          fi
+
+          # Source 3: Generate with ffmpeg if all downloads fail
+          if [ "$MUSIC_OK" = false ]; then
+            echo "Generating music with ffmpeg..."
+            ffmpeg -y -f lavfi \
+              -i "anoisesrc=c=pink:r=44100:a=0.05" \
+              -f lavfi \
+              -i "aevalsrc=0.08*sin(110*2*PI*t)+0.06*sin(220*2*PI*t)+0.04*sin(330*2*PI*t):s=44100" \
+              -filter_complex "amix=inputs=2:duration=shortest,afade=t=in:st=0:d=3,afade=t=out:st=30:d=5,volume=0.4,lowpass=f=800" \
+              -t 35 \
+              /tmp/audio/bg_music.mp3 -y 2>/dev/null
+            MUSIC_OK=true
+            echo "Generated music ready!"
+          fi
+
+          echo "Final music size: $(stat -c%s /tmp/audio/bg_music.mp3) bytes"
 
       - name: Create video frames
         run: |
           mkdir -p /tmp/frames /tmp/output
 
-          TITLE="${{ github.event.inputs.title }}"
-          SOURCE="${{ github.event.inputs.source }}"
+          # Clean inputs - remove unicode and special chars
+          TITLE=$(echo "${{ github.event.inputs.title }}" | iconv -f utf-8 -t ascii//TRANSLIT 2>/dev/null || echo "${{ github.event.inputs.title }}")
+          SOURCE=$(echo "${{ github.event.inputs.source }}" | iconv -f utf-8 -t ascii//TRANSLIT 2>/dev/null || echo "${{ github.event.inputs.source }}")
           TOPIC="${{ github.event.inputs.topic }}"
           IMAGE_URL="${{ github.event.inputs.image_url }}"
           TODAY=$(date '+%b %d, %Y')
@@ -92,137 +139,124 @@ jobs:
             *) ACCENT="#c8102e" DARK="#0d0508" ;;
           esac
 
-          echo "Title: $TITLE | Topic: $TOPIC | Accent: $ACCENT"
+          echo "Title: $TITLE"
+          echo "Topic: $TOPIC | Accent: $ACCENT"
 
-          # =====================
-          # Download image - 3 methods - always gets image!
-          # =====================
+          # ============================================================
+          # DOWNLOAD BACKGROUND IMAGE - 3 methods
+          # ============================================================
           BG_OK=false
 
-          # Method 1: Try original RSS image URL
+          # Method 1: RSS image
           if [ -n "$IMAGE_URL" ]; then
-            echo "Trying RSS image: $IMAGE_URL"
-            curl -s -L --max-time 20 --retry 2 \
+            echo "Trying RSS image..."
+            curl -s -L --max-time 60 --retry 3 \
               -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36" \
               -H "Accept: image/webp,image/apng,image/*,*/*;q=0.8" \
               -H "Referer: https://www.google.com/" \
               -o /tmp/bg_raw.jpg "$IMAGE_URL" 2>/dev/null
-            FILESIZE=$(stat -c%s /tmp/bg_raw.jpg 2>/dev/null || echo 0)
-            echo "RSS image: $FILESIZE bytes"
-            if [ "$FILESIZE" -gt 5000 ]; then
+            FSIZE=$(stat -c%s /tmp/bg_raw.jpg 2>/dev/null || echo 0)
+            echo "RSS image: $FSIZE bytes"
+            if [ "$FSIZE" -gt 5000 ]; then
               convert /tmp/bg_raw.jpg \
-                -resize 720x1280^ \
-                -gravity Center \
-                -extent 720x1280 \
+                -resize 720x1280^ -gravity Center -extent 720x1280 \
                 /tmp/bg_ready.jpg 2>/dev/null && BG_OK=true
               echo "RSS image ready!"
             fi
           fi
 
-          # Method 2: Pollinations.ai AI image - FREE unlimited!
+          # Method 2: Pollinations AI image
           if [ "$BG_OK" = false ]; then
-            echo "Using Pollinations.ai AI image..."
-            CLEAN_TITLE=$(echo "$TITLE" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9 ]//g' | tr ' ' '+' | cut -c1-60)
-            PROMPT="professional+news+photo+${CLEAN_TITLE}+realistic+high+quality+dramatic"
-            POLLINATIONS_URL="https://image.pollinations.ai/prompt/${PROMPT}?width=720&height=1280&nologo=true&seed=42"
-            echo "Pollinations: $POLLINATIONS_URL"
+            echo "Trying Pollinations AI image..."
+            CLEAN=$(echo "$TITLE" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9 ]/ /g' | tr ' ' '+' | sed 's/+\+/+/g' | cut -c1-60)
+            PURL="https://image.pollinations.ai/prompt/news+photo+${CLEAN}+professional+dramatic?width=720&height=1280&nologo=true&seed=123"
+            echo "Pollinations URL: $PURL"
             curl -s -L --max-time 60 --retry 2 \
               -A "Mozilla/5.0" \
-              -o /tmp/bg_raw.jpg "$POLLINATIONS_URL" 2>/dev/null
-            FILESIZE=$(stat -c%s /tmp/bg_raw.jpg 2>/dev/null || echo 0)
-            echo "AI image: $FILESIZE bytes"
-            if [ "$FILESIZE" -gt 5000 ]; then
+              -o /tmp/bg_raw.jpg "$PURL" 2>/dev/null
+            FSIZE=$(stat -c%s /tmp/bg_raw.jpg 2>/dev/null || echo 0)
+            echo "AI image: $FSIZE bytes"
+            if [ "$FSIZE" -gt 5000 ]; then
               convert /tmp/bg_raw.jpg \
-                -resize 720x1280^ \
-                -gravity Center \
-                -extent 720x1280 \
+                -resize 720x1280^ -gravity Center -extent 720x1280 \
                 /tmp/bg_ready.jpg 2>/dev/null && BG_OK=true
               echo "AI image ready!"
             fi
           fi
 
-          # Method 3: Topic gradient fallback
+          # Method 3: Gradient fallback
           if [ "$BG_OK" = false ]; then
-            echo "Using gradient fallback..."
+            echo "Using gradient..."
             convert -size 720x1280 gradient:"${ACCENT}"-"${DARK}" /tmp/bg_ready.jpg
             BG_OK=true
-            echo "Gradient ready!"
           fi
 
-          echo "Image status: $BG_OK"
+          echo "Background ready: $BG_OK"
 
-          # =====================
-          # SLIDE 1 - HEADLINE with real image
-          # =====================
+          # ============================================================
+          # SLIDE 1 - HEADLINE with image
+          # ============================================================
           echo "Creating slide 1..."
 
-          if [ "$BG_OK" = true ]; then
-            # Use real image - only dark gradient at BOTTOM for text readability
-            convert /tmp/bg_ready.jpg \
-              -fill "rgba(0,0,0,0.0)" -draw "rectangle 0,0 720,600" \
-              -fill "rgba(0,0,0,0.6)" -draw "rectangle 0,600 720,900" \
-              -fill "rgba(0,0,0,0.92)" -draw "rectangle 0,900 720,1280" \
-              /tmp/slide1_base.jpg
-          else
-            echo "No image - using gradient"
-            convert -size 720x1280 gradient:"${ACCENT}"-"${DARK}" \
-              /tmp/slide1_base.jpg
-          fi
+          # Apply dark gradient only at bottom so image is visible at top
+          convert /tmp/bg_ready.jpg \
+            \( -size 720x1280 gradient:none-"rgba(0,0,0,0.97)" \) \
+            -composite \
+            /tmp/slide1_base.jpg
 
           # Top branding bar
           convert /tmp/slide1_base.jpg \
-            -fill "rgba(0,0,0,0.75)" -draw "rectangle 0,0 720,85" \
+            -fill "rgba(0,0,0,0.8)" -draw "rectangle 0,0 720,85" \
             -font "$FONT_BOLD" -pointsize 30 \
-            -fill "#ffffff" \
-            -draw "text 20,55 'OH BOY NEWS'" \
+            -fill "#ffffff" -draw "text 20,55 'OH BOY NEWS'" \
             /tmp/slide1_base.jpg
 
           # Topic badge
-          BADGE_W=$((${#TOPIC} * 17 + 40))
+          BLEN=${#TOPIC}
+          BADGE_W=$((BLEN * 16 + 40))
+          TOPIC_UP=$(echo "$TOPIC" | tr '[:lower:]' '[:upper:]')
           convert /tmp/slide1_base.jpg \
             -fill "$ACCENT" \
-            -draw "roundrectangle 40,760 $((40+BADGE_W)),808 8,8" \
-            -font "$FONT_BOLD" -pointsize 22 \
+            -draw "roundrectangle 40,760 $((40+BADGE_W)),805 8,8" \
+            -font "$FONT_BOLD" -pointsize 21 \
             -fill "#ffffff" \
-            -draw "text 56,792 '$(echo $TOPIC | tr '[:lower:]' '[:upper:]')'" \
+            -draw "text 55,789 '$TOPIC_UP'" \
             /tmp/slide1_base.jpg
 
-          # Headline
+          # Headline text
           convert -background none \
-            -fill "#ffffff" \
-            -font "$FONT_BOLD" \
-            -pointsize 44 \
-            -gravity NorthWest \
-            -size 640x300 \
+            -fill "#ffffff" -font "$FONT_BOLD" -pointsize 44 \
+            -gravity NorthWest -size 640x300 \
             caption:"$TITLE" \
             /tmp/title_text.png
 
           convert /tmp/slide1_base.jpg \
-            /tmp/title_text.png \
-            -geometry +40+820 \
-            -composite \
+            /tmp/title_text.png -geometry +40+818 -composite \
             /tmp/slide1_base.jpg
 
-          # Source + swipe hint
+          # Source + hint
           convert /tmp/slide1_base.jpg \
-            -font "$FONT_REG" -pointsize 24 \
-            -fill "#cccccc" \
-            -draw "text 40,1180 '$SOURCE  -  $TODAY'" \
-            -fill "#aaaaaa" -pointsize 20 \
-            -draw "text 40,1225 'Swipe up for full story >'" \
+            -font "$FONT_REG" -pointsize 23 \
+            -fill "#cccccc" -draw "text 40,1178 '$SOURCE  -  $TODAY'" \
+            -fill "#999999" -pointsize 20 \
+            -draw "text 40,1222 'Swipe up for full story >'" \
             /tmp/frames/frame_01.jpg
 
           echo "Slide 1: $(stat -c%s /tmp/frames/frame_01.jpg) bytes"
 
-          # ========================
-          # SLIDES 2-7
-          # ========================
-          S1="${{ github.event.inputs.sentence1 }}"
-          S2="${{ github.event.inputs.sentence2 }}"
-          S3="${{ github.event.inputs.sentence3 }}"
-          S4="${{ github.event.inputs.sentence4 }}"
-          S5="${{ github.event.inputs.sentence5 }}"
-          S6="${{ github.event.inputs.sentence6 }}"
+          # ============================================================
+          # SENTENCES - clean unicode
+          # ============================================================
+          clean_text() {
+            echo "$1" | iconv -f utf-8 -t ascii//TRANSLIT 2>/dev/null | sed "s/['\`]//g"
+          }
+
+          S1=$(clean_text "${{ github.event.inputs.sentence1 }}")
+          S2=$(clean_text "${{ github.event.inputs.sentence2 }}")
+          S3=$(clean_text "${{ github.event.inputs.sentence3 }}")
+          S4=$(clean_text "${{ github.event.inputs.sentence4 }}")
+          S5=$(clean_text "${{ github.event.inputs.sentence5 }}")
+          S6=$(clean_text "${{ github.event.inputs.sentence6 }}")
 
           LABELS=("WHAT HAPPENED" "KEY DETAIL" "MORE DETAILS" "WHY IT MATTERS" "REACTION" "WHATS NEXT")
           FALLBACKS=(
@@ -235,6 +269,9 @@ jobs:
           )
           SENTENCES=("$S1" "$S2" "$S3" "$S4" "$S5" "$S6")
 
+          # ============================================================
+          # SLIDES 2-7 - Dark background + white text
+          # ============================================================
           for i in 0 1 2 3 4 5; do
             SLIDE_NUM=$((i + 2))
             LABEL="${LABELS[$i]}"
@@ -244,41 +281,42 @@ jobs:
             FNAME="frame_0${SLIDE_NUM}.jpg"
             echo "Creating slide $SLIDE_NUM: $LABEL"
 
+            # Dark base
             convert -size 720x1280 xc:"#0d0d0d" /tmp/slide_base.jpg
 
+            # Accent bar top + nav
             convert /tmp/slide_base.jpg \
               -fill "$ACCENT" -draw "rectangle 0,0 720,6" \
               -fill "rgba(0,0,0,0.95)" -draw "rectangle 0,0 720,80" \
               -font "$FONT_BOLD" -pointsize 28 \
               -fill "#ffffff" -draw "text 20,52 'OH BOY NEWS'" \
               -font "$FONT_REG" -pointsize 22 \
-              -fill "#888888" -draw "text 580,52 '${SLIDE_NUM}/8'" \
+              -fill "#888888" -draw "text 575,52 '${SLIDE_NUM}/8'" \
               /tmp/slide_base.jpg
 
-            BADGE_W=$((${#LABEL} * 15 + 30))
+            # Label badge
+            LLEN=${#LABEL}
+            LBADGE_W=$((LLEN * 14 + 30))
             convert /tmp/slide_base.jpg \
               -fill "$ACCENT" \
-              -draw "roundrectangle 40,105 $((40+BADGE_W)),150 6,6" \
+              -draw "roundrectangle 40,105 $((40+LBADGE_W)),150 6,6" \
               -font "$FONT_BOLD" -pointsize 20 \
               -fill "#ffffff" -draw "text 55,138 '$LABEL'" \
               -fill "$ACCENT" -draw "rectangle 40,165 160,171" \
               /tmp/slide_base.jpg
 
+            # Body text - white
             convert -background none \
-              -fill "#ffffff" \
-              -font "$FONT_REG" \
-              -pointsize 38 \
-              -gravity NorthWest \
-              -size 640x900 \
+              -fill "#ffffff" -font "$FONT_REG" -pointsize 38 \
+              -gravity NorthWest -size 640x900 \
               caption:"$TEXT" \
               /tmp/body_text.png
 
             convert /tmp/slide_base.jpg \
-              /tmp/body_text.png \
-              -geometry +40+185 \
-              -composite \
+              /tmp/body_text.png -geometry +40+185 -composite \
               /tmp/slide_base.jpg
 
+            # Bottom bar + source + progress
             convert /tmp/slide_base.jpg \
               -fill "rgba(0,0,0,0.95)" -draw "rectangle 0,1215 720,1280" \
               -font "$FONT_REG" -pointsize 20 \
@@ -290,22 +328,17 @@ jobs:
             echo "Slide $SLIDE_NUM: $(stat -c%s /tmp/frames/$FNAME) bytes"
           done
 
-          # ========================
-          # SLIDE 8 - CTA
-          # ========================
+          # ============================================================
+          # SLIDE 8 - CTA with image background
+          # ============================================================
           echo "Creating slide 8..."
-          if [ "$BG_OK" = true ]; then
-            convert /tmp/bg_ready.jpg \
-              -fill "rgba(0,0,0,0.75)" -draw "rectangle 0,0 720,1280" \
-              /tmp/slide8_base.jpg
-          else
-            convert -size 720x1280 gradient:"${ACCENT}"-"${DARK}" \
-              -fill "rgba(0,0,0,0.5)" -draw "rectangle 0,0 720,1280" \
-              /tmp/slide8_base.jpg
-          fi
+          convert /tmp/bg_ready.jpg \
+            -fill "rgba(0,0,0,0.72)" -draw "rectangle 0,0 720,1280" \
+            /tmp/slide8_base.jpg
 
+          # OH BOY NEWS big text
           convert -background none \
-            -fill "#ffffff" -font "$FONT_BOLD" -pointsize 90 \
+            -fill "#ffffff" -font "$FONT_BOLD" -pointsize 85 \
             -gravity Center -size 680x220 \
             caption:"OH BOY NEWS" \
             /tmp/cta_title.png
@@ -314,9 +347,10 @@ jobs:
             /tmp/cta_title.png -gravity Center -geometry +0-200 -composite \
             /tmp/slide8_base.jpg
 
+          # Subscribe text
           convert -background none \
-            -fill "#ffffff" -font "$FONT_REG" -pointsize 36 \
-            -gravity Center -size 680x120 \
+            -fill "#ffffff" -font "$FONT_REG" -pointsize 34 \
+            -gravity Center -size 680x100 \
             caption:"SUBSCRIBE for daily breaking news!" \
             /tmp/cta_sub.png
 
@@ -324,18 +358,19 @@ jobs:
             /tmp/cta_sub.png -gravity Center -geometry +0+50 -composite \
             /tmp/slide8_base.jpg
 
+          # Hashtags
           convert /tmp/slide8_base.jpg \
-            -font "$FONT_REG" -pointsize 26 \
+            -font "$FONT_REG" -pointsize 24 \
             -fill "rgba(255,255,255,0.7)" \
             -gravity Center \
-            -annotate +0+200 "#Shorts #BreakingNews #News" \
+            -annotate +0+190 "#Shorts #BreakingNews #News" \
             /tmp/frames/frame_08.jpg
 
           echo "Slide 8: $(stat -c%s /tmp/frames/frame_08.jpg) bytes"
           echo "ALL FRAMES:"
           ls -lh /tmp/frames/
 
-      - name: Create MP4 with FFmpeg and music
+      - name: Create MP4 with music
         run: |
           > /tmp/frames.txt
           echo "file '/tmp/frames/frame_01.jpg'" >> /tmp/frames.txt
@@ -346,16 +381,30 @@ jobs:
           done
           echo "file '/tmp/frames/frame_08.jpg'" >> /tmp/frames.txt
 
-          ffmpeg -y \
-            -f concat -safe 0 -i /tmp/frames.txt \
-            -stream_loop -1 -i /tmp/audio/bg_music.mp3 \
-            -vf "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=25" \
-            -c:v libx264 -preset fast -crf 22 -pix_fmt yuv420p \
-            -c:a aac -b:a 128k \
-            -af "volume=0.3,afade=t=out:st=22:d=3" \
-            -shortest \
-            -movflags +faststart \
-            /tmp/output/video.mp4
+          MSIZE=$(stat -c%s /tmp/audio/bg_music.mp3 2>/dev/null || echo 0)
+          echo "Music size: $MSIZE bytes"
+
+          if [ "$MSIZE" -gt 10000 ]; then
+            echo "Creating video WITH music..."
+            ffmpeg -y \
+              -f concat -safe 0 -i /tmp/frames.txt \
+              -stream_loop -1 -i /tmp/audio/bg_music.mp3 \
+              -vf "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=25" \
+              -c:v libx264 -preset fast -crf 22 -pix_fmt yuv420p \
+              -c:a aac -b:a 128k \
+              -af "volume=0.4,afade=t=out:st=21:d=3" \
+              -shortest \
+              -movflags +faststart \
+              /tmp/output/video.mp4
+          else
+            echo "Creating video WITHOUT music..."
+            ffmpeg -y \
+              -f concat -safe 0 -i /tmp/frames.txt \
+              -vf "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=25" \
+              -c:v libx264 -preset fast -crf 22 -pix_fmt yuv420p \
+              -movflags +faststart \
+              /tmp/output/video.mp4
+          fi
 
           echo "Video ready:"
           ls -lh /tmp/output/video.mp4
@@ -369,9 +418,12 @@ jobs:
             -d "refresh_token=${{ secrets.YT_REFRESH_TOKEN }}" \
             -d "grant_type=refresh_token")
           ACCESS_TOKEN=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('access_token',''))")
-          if [ -z "$ACCESS_TOKEN" ]; then echo "ERROR!"; exit 1; fi
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "ERROR: No token! Response: $RESPONSE"
+            exit 1
+          fi
           echo "access_token=$ACCESS_TOKEN" >> $GITHUB_OUTPUT
-          echo "Got token!"
+          echo "Got YouTube token!"
 
       - name: Upload to YouTube
         id: yt_upload
@@ -406,7 +458,11 @@ jobs:
             -d @/tmp/metadata.json
 
           UPLOAD_URL=$(grep -i "^location:" /tmp/headers.txt | tr -d '\r\n' | sed 's/[Ll]ocation: //')
-          if [ -z "$UPLOAD_URL" ]; then echo "No URL!"; cat /tmp/headers.txt; exit 1; fi
+          if [ -z "$UPLOAD_URL" ]; then
+            echo "No upload URL!"
+            cat /tmp/headers.txt
+            exit 1
+          fi
 
           RESULT=$(curl -s -X PUT "$UPLOAD_URL" \
             -H "Authorization: Bearer $ACCESS_TOKEN" \
@@ -415,7 +471,10 @@ jobs:
             --data-binary @"$VIDEO_PATH")
 
           VIDEO_ID=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null)
-          if [ -z "$VIDEO_ID" ]; then echo "Failed! $RESULT"; exit 1; fi
+          if [ -z "$VIDEO_ID" ]; then
+            echo "Upload failed! $RESULT"
+            exit 1
+          fi
 
           echo "video_id=$VIDEO_ID" >> $GITHUB_OUTPUT
           echo "yt_url=https://www.youtube.com/shorts/$VIDEO_ID" >> $GITHUB_OUTPUT
@@ -429,6 +488,7 @@ jobs:
             -d "video_id=${{ steps.yt_upload.outputs.video_id }}" \
             -d "yt_url=${{ steps.yt_upload.outputs.yt_url }}" \
             -d "status=success"
+          echo "WordPress notified!"
 
       - name: Notify WordPress failure
         if: failure()
@@ -436,3 +496,4 @@ jobs:
           curl -s -X POST "${{ github.event.inputs.callback_url }}" \
             -d "post_id=${{ github.event.inputs.post_id }}" \
             -d "status=failed"
+          echo "WordPress notified - failed!"
