@@ -308,8 +308,8 @@ jobs:
             -fill "#ffffff" \
             -font "$FONT_BOLD" \
             -pointsize 90 \
+            -gravity Center \
             -size 680x200 \
-            gravity center \
             caption:"OH BOY NEWS" \
             /tmp/cta_title.png
 
@@ -325,8 +325,8 @@ jobs:
             -fill "#ffffff" \
             -font "$FONT_REG" \
             -pointsize 38 \
+            -gravity Center \
             -size 680x100 \
-            gravity center \
             caption:"SUBSCRIBE for daily breaking news!" \
             /tmp/cta_sub.png
 
@@ -341,7 +341,8 @@ jobs:
           convert /tmp/slide8_base.jpg \
             -font "$FONT_REG" -pointsize 26 \
             -fill "rgba(255,255,255,0.7)" \
-            -draw "gravity center text 0,180 '#Shorts #BreakingNews #News'" \
+            -gravity Center \
+            -annotate +0+180 "#Shorts #BreakingNews #News" \
             /tmp/frames/frame_08.jpg
 
           echo "Slide 8 done: $(stat -c%s /tmp/frames/frame_08.jpg) bytes"
