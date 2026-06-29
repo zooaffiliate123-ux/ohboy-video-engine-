@@ -49,20 +49,19 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg python3 python3-pip wget curl
+          sudo apt-get install -y ffmpeg python3 python3-pip
           pip3 install Pillow requests --quiet
           echo "Done!"
 
       - name: Generate background music
         run: |
           mkdir -p /tmp/audio
-          # Generate soft ambient music using ffmpeg
           ffmpeg -y -f lavfi \
-            -i "aevalsrc=0.1*sin(110*2*PI*t)+0.07*sin(165*2*PI*t)+0.05*sin(220*2*PI*t)+0.03*sin(330*2*PI*t):s=44100" \
+            -i "aevalsrc=0.1*sin(110*2*PI*t)+0.07*sin(165*2*PI*t)+0.05*sin(220*2*PI*t):s=44100" \
             -t 35 \
             -af "afade=t=in:st=0:d=4,afade=t=out:st=31:d=4,volume=0.35,lowpass=f=600" \
             /tmp/audio/bg_music.mp3 2>/dev/null
-          echo "Music size: $(stat -c%s /tmp/audio/bg_music.mp3) bytes"
+          echo "Music: $(stat -c%s /tmp/audio/bg_music.mp3) bytes"
 
       - name: Create video frames with Python
         env:
@@ -78,17 +77,10 @@ jobs:
           SENTENCE6: ${{ github.event.inputs.sentence6 }}
         run: |
           python3 << 'PYEOF'
-          import os
-          import sys
-          import requests
-          import unicodedata
-          from PIL import Image, ImageDraw, ImageFont, ImageFilter
+          import os, sys, requests, unicodedata, html, re
+          from PIL import Image, ImageDraw, ImageFont
           from io import BytesIO
-          import textwrap
 
-          # ============================================================
-          # CONFIG
-          # ============================================================
           W, H = 720, 1280
           os.makedirs('/tmp/frames', exist_ok=True)
           os.makedirs('/tmp/output', exist_ok=True)
@@ -96,46 +88,43 @@ jobs:
           def clean_text(text):
               if not text:
                   return ''
+              # Fix HTML entities like &#8217; &#8216; etc
+              text = html.unescape(text)
               # Normalize unicode
               text = unicodedata.normalize('NFKD', text)
-              # Replace common unicode quotes
+              # Replace smart quotes
               text = text.replace('\u2019', "'").replace('\u2018', "'")
               text = text.replace('\u201c', '"').replace('\u201d', '"')
               text = text.replace('\u2013', '-').replace('\u2014', '-')
               text = text.replace('\u2026', '...')
-              # Keep only ASCII printable + common chars
+              # Remove non-ASCII except common punctuation
               result = ''
               for c in text:
-                  if ord(c) < 128 or c in '£€°':
+                  if ord(c) < 128:
                       result += c
                   else:
                       result += ' '
               return ' '.join(result.split())
 
-          TITLE = clean_text(os.environ.get('TITLE', 'Breaking News'))
-          SOURCE = clean_text(os.environ.get('SOURCE', 'OH BOY NEWS'))
-          TOPIC = clean_text(os.environ.get('TOPIC', 'Breaking News'))
+          TITLE    = clean_text(os.environ.get('TITLE', 'Breaking News'))
+          SOURCE   = clean_text(os.environ.get('SOURCE', 'OH BOY NEWS'))
+          TOPIC    = clean_text(os.environ.get('TOPIC', 'Breaking News'))
           IMAGE_URL = os.environ.get('IMAGE_URL', '')
-          SENTENCES = [
-              clean_text(os.environ.get(f'SENTENCE{i}', ''))
-              for i in range(1, 7)
-          ]
+          SENTENCES = [clean_text(os.environ.get(f'SENTENCE{i}', '')) for i in range(1, 7)]
 
           print(f"Title: {TITLE}")
           print(f"Topic: {TOPIC}")
-          print(f"Image URL: {IMAGE_URL}")
+          print(f"Sentences: {SENTENCES}")
 
-          # ============================================================
-          # COLORS PER TOPIC
-          # ============================================================
+          # Colors
           COLORS = {
               'Breaking News': ('#c8102e', '#0d0508'),
-              'Politics': ('#1a5fb4', '#080d1a'),
+              'Politics':      ('#1a5fb4', '#080d1a'),
               'Entertainment': ('#9141ac', '#0d080f'),
-              'Sports': ('#26a269', '#05120a'),
-              'Technology': ('#1c71d8', '#080d1a'),
-              'Business': ('#c8a000', '#120e02'),
-              'World': ('#c64600', '#120800'),
+              'Sports':        ('#26a269', '#05120a'),
+              'Technology':    ('#1c71d8', '#080d1a'),
+              'Business':      ('#c8a000', '#120e02'),
+              'World':         ('#c64600', '#120800'),
           }
           accent_hex, dark_hex = COLORS.get(TOPIC, ('#c8102e', '#0d0508'))
 
@@ -143,122 +132,40 @@ jobs:
               h = h.lstrip('#')
               return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
 
-          ACCENT = hex_to_rgb(accent_hex)
-          DARK = hex_to_rgb(dark_hex)
-          WHITE = (255, 255, 255)
-          BLACK = (0, 0, 0)
-          GRAY = (140, 140, 140)
-          DARK_BG = (13, 13, 13)
+          ACCENT   = hex_to_rgb(accent_hex)
+          DARK     = hex_to_rgb(dark_hex)
+          WHITE    = (255, 255, 255)
+          GRAY     = (160, 160, 160)
+          DARK_BG  = (13, 13, 13)
 
-          # ============================================================
-          # FONTS - use default PIL fonts (always available)
-          # ============================================================
+          # Fonts
           try:
-              from PIL import ImageFont
-              # Try to load DejaVu fonts
-              FONT_BOLD_LG = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 52)
-              FONT_BOLD_MD = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 36)
-              FONT_BOLD_SM = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 26)
-              FONT_BOLD_XS = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 22)
-              FONT_REG_LG  = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 40)
-              FONT_REG_MD  = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 28)
-              FONT_REG_SM  = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 22)
-              FONT_REG_XS  = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 18)
-              print("DejaVu fonts loaded!")
-          except:
-              print("Using default fonts")
-              FONT_BOLD_LG = ImageFont.load_default()
-              FONT_BOLD_MD = FONT_BOLD_LG
-              FONT_BOLD_SM = FONT_BOLD_LG
-              FONT_BOLD_XS = FONT_BOLD_LG
-              FONT_REG_LG  = FONT_BOLD_LG
-              FONT_REG_MD  = FONT_BOLD_LG
-              FONT_REG_SM  = FONT_BOLD_LG
-              FONT_REG_XS  = FONT_BOLD_LG
+              FB52 = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 52)
+              FB42 = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 42)
+              FB36 = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 36)
+              FB28 = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 28)
+              FB22 = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 22)
+              FR40 = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 40)
+              FR28 = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 28)
+              FR22 = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 22)
+              FR18 = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 18)
+              print("Fonts loaded!")
+          except Exception as e:
+              print(f"Font error: {e}")
+              FB52 = FB42 = FB36 = FB28 = FB22 = FR40 = FR28 = FR22 = FR18 = ImageFont.load_default()
 
-          # ============================================================
-          # DOWNLOAD BACKGROUND IMAGE
-          # ============================================================
-          bg_image = None
-
-          # Try RSS image first
-          if IMAGE_URL:
-              print(f"Downloading RSS image...")
-              try:
-                  headers = {
-                      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
-                      'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-                      'Referer': 'https://www.google.com/',
-                  }
-                  r = requests.get(IMAGE_URL, headers=headers, timeout=30)
-                  if r.status_code == 200 and len(r.content) > 5000:
-                      img = Image.open(BytesIO(r.content)).convert('RGB')
-                      # Resize to fill 720x1280
-                      img_ratio = img.width / img.height
-                      target_ratio = W / H
-                      if img_ratio > target_ratio:
-                          new_h = H
-                          new_w = int(H * img_ratio)
-                      else:
-                          new_w = W
-                          new_h = int(W / img_ratio)
-                      img = img.resize((new_w, new_h), Image.LANCZOS)
-                      # Center crop
-                      left = (new_w - W) // 2
-                      top = (new_h - H) // 2
-                      img = img.crop((left, top, left + W, top + H))
-                      bg_image = img
-                      print(f"RSS image ready: {bg_image.size}")
-              except Exception as e:
-                  print(f"RSS image failed: {e}")
-
-          # Try Pollinations AI if RSS failed
-          if bg_image is None:
-              print("Trying Pollinations AI image...")
-              try:
-                  clean_title = ''.join(c if c.isalnum() or c == ' ' else ' ' for c in TITLE[:60])
-                  prompt = f"professional news photo {clean_title} dramatic realistic high quality"
-                  prompt_encoded = '+'.join(prompt.split())
-                  poll_url = f"https://image.pollinations.ai/prompt/{prompt_encoded}?width=720&height=1280&nologo=true&seed=42"
-                  print(f"Pollinations URL: {poll_url}")
-                  r = requests.get(poll_url, timeout=60, headers={'User-Agent': 'Mozilla/5.0'})
-                  if r.status_code == 200 and len(r.content) > 5000:
-                      img = Image.open(BytesIO(r.content)).convert('RGB')
-                      img = img.resize((W, H), Image.LANCZOS)
-                      bg_image = img
-                      print(f"AI image ready: {bg_image.size}")
-              except Exception as e:
-                  print(f"Pollinations failed: {e}")
-
-          # Gradient fallback
-          if bg_image is None:
-              print("Using gradient fallback...")
-              bg_image = Image.new('RGB', (W, H))
-              for y in range(H):
-                  ratio = y / H
-                  r = int(ACCENT[0] * (1 - ratio) + DARK[0] * ratio)
-                  g = int(ACCENT[1] * (1 - ratio) + DARK[1] * ratio)
-                  b = int(ACCENT[2] * (1 - ratio) + DARK[2] * ratio)
-                  for x in range(W):
-                      bg_image.putpixel((x, y), (r, g, b))
-              print("Gradient ready!")
-
-          # ============================================================
-          # HELPER FUNCTIONS
-          # ============================================================
           def draw_rounded_rect(draw, xy, radius, fill):
               x1, y1, x2, y2 = xy
-              draw.rectangle([x1 + radius, y1, x2 - radius, y2], fill=fill)
-              draw.rectangle([x1, y1 + radius, x2, y2 - radius], fill=fill)
-              draw.ellipse([x1, y1, x1 + radius*2, y1 + radius*2], fill=fill)
-              draw.ellipse([x2 - radius*2, y1, x2, y1 + radius*2], fill=fill)
-              draw.ellipse([x1, y2 - radius*2, x1 + radius*2, y2], fill=fill)
-              draw.ellipse([x2 - radius*2, y2 - radius*2, x2, y2], fill=fill)
+              draw.rectangle([x1+radius, y1, x2-radius, y2], fill=fill)
+              draw.rectangle([x1, y1+radius, x2, y2-radius], fill=fill)
+              draw.ellipse([x1, y1, x1+radius*2, y1+radius*2], fill=fill)
+              draw.ellipse([x2-radius*2, y1, x2, y1+radius*2], fill=fill)
+              draw.ellipse([x1, y2-radius*2, x1+radius*2, y2], fill=fill)
+              draw.ellipse([x2-radius*2, y2-radius*2, x2, y2], fill=fill)
 
           def wrap_text(text, font, max_width, draw):
               words = text.split()
-              lines = []
-              current = ''
+              lines, current = [], ''
               for word in words:
                   test = (current + ' ' + word).strip()
                   bbox = draw.textbbox((0, 0), test, font=font)
@@ -272,201 +179,289 @@ jobs:
                   lines.append(current)
               return lines
 
-          def draw_text_with_shadow(draw, pos, text, font, fill, shadow_offset=2):
-              x, y = pos
-              # Shadow
-              draw.text((x + shadow_offset, y + shadow_offset), text, font=font, fill=(0, 0, 0, 180))
-              # Main text
+          def draw_centered_text(draw, y, text, font, fill, max_width=W-80):
+              bbox = draw.textbbox((0, 0), text, font=font)
+              tw = bbox[2] - bbox[0]
+              x = (W - min(tw, max_width)) // 2
               draw.text((x, y), text, font=font, fill=fill)
+              return bbox[3] - bbox[1]
 
-          def draw_multiline_with_shadow(draw, x, y, lines, font, fill, line_height):
+          def draw_centered_multiline(draw, y, lines, font, fill, line_height):
               for line in lines:
-                  draw_text_with_shadow(draw, (x, y), line, font, fill)
+                  bbox = draw.textbbox((0, 0), line, font=font)
+                  tw = bbox[2] - bbox[0]
+                  x = (W - tw) // 2
+                  # Shadow
+                  draw.text((x+2, y+2), line, font=font, fill=(0, 0, 0))
+                  draw.text((x, y), line, font=font, fill=fill)
                   y += line_height
               return y
 
           # ============================================================
-          # SLIDE 1 - HEADLINE with real image
+          # DOWNLOAD BACKGROUND IMAGE
+          # ============================================================
+          bg_image = None
+
+          if IMAGE_URL:
+              print(f"Downloading image: {IMAGE_URL}")
+              try:
+                  headers = {
+                      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0',
+                      'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+                      'Referer': 'https://www.google.com/',
+                  }
+                  r = requests.get(IMAGE_URL, headers=headers, timeout=30)
+                  if r.status_code == 200 and len(r.content) > 5000:
+                      img = Image.open(BytesIO(r.content)).convert('RGB')
+                      ratio = img.width / img.height
+                      target = W / H
+                      if ratio > target:
+                          nw, nh = int(H * ratio), H
+                      else:
+                          nw, nh = W, int(W / ratio)
+                      img = img.resize((nw, nh), Image.LANCZOS)
+                      left = (nw - W) // 2
+                      top  = (nh - H) // 2
+                      img  = img.crop((left, top, left + W, top + H))
+                      bg_image = img
+                      print(f"RSS image ready!")
+              except Exception as e:
+                  print(f"RSS image failed: {e}")
+
+          if bg_image is None:
+              print("Trying Pollinations AI...")
+              try:
+                  clean_title = re.sub(r'[^a-z0-9 ]', ' ', TITLE[:60].lower())
+                  prompt = '+'.join(clean_title.split())
+                  url = f"https://image.pollinations.ai/prompt/news+photo+{prompt}+professional+dramatic?width=720&height=1280&nologo=true&seed=42"
+                  r = requests.get(url, timeout=60, headers={'User-Agent': 'Mozilla/5.0'})
+                  if r.status_code == 200 and len(r.content) > 5000:
+                      img = Image.open(BytesIO(r.content)).convert('RGB')
+                      img = img.resize((W, H), Image.LANCZOS)
+                      bg_image = img
+                      print("AI image ready!")
+              except Exception as e:
+                  print(f"Pollinations failed: {e}")
+
+          if bg_image is None:
+              print("Using gradient...")
+              bg_image = Image.new('RGB', (W, H))
+              draw_temp = ImageDraw.Draw(bg_image)
+              for y in range(H):
+                  ratio = y / H
+                  r = int(ACCENT[0]*(1-ratio) + DARK[0]*ratio)
+                  g = int(ACCENT[1]*(1-ratio) + DARK[1]*ratio)
+                  b = int(ACCENT[2]*(1-ratio) + DARK[2]*ratio)
+                  draw_temp.line([(0,y),(W,y)], fill=(r,g,b))
+
+          def make_slide_with_bg(text_lines_data, slide_num, label=None):
+              """
+              Creates a slide with bg image + dark overlay
+              text_lines_data: list of (text, font, color, y_offset)
+              """
+              img = bg_image.copy()
+              # Full dark overlay - image visible but text readable
+              overlay = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+              od = ImageDraw.Draw(overlay)
+              for y in range(H):
+                  ratio = y / H
+                  if slide_num == 1:
+                      # Slide 1: top clear, bottom dark
+                      if ratio < 0.3:
+                          alpha = 20
+                      elif ratio < 0.55:
+                          alpha = int(20 + (ratio - 0.3)/0.25 * 160)
+                      else:
+                          alpha = 180
+                  else:
+                      # Other slides: darker overall so text readable
+                      alpha = int(200 + ratio * 30)
+                      alpha = min(alpha, 230)
+                  od.line([(0,y),(W,y)], fill=(0,0,0,alpha))
+              img = img.convert('RGBA')
+              img = Image.alpha_composite(img, overlay)
+              img = img.convert('RGB')
+              return img
+
+          import datetime
+          TODAY = datetime.date.today().strftime('%b %d, %Y')
+
+          # ============================================================
+          # SLIDE 1 - HEADLINE
           # ============================================================
           print("Creating slide 1...")
-          img1 = bg_image.copy()
-
-          # Dark gradient overlay - only bottom 55% so image is visible at top
-          overlay = Image.new('RGBA', (W, H), (0, 0, 0, 0))
-          overlay_draw = ImageDraw.Draw(overlay)
-          
-          # Gradient from transparent to dark
-          for y in range(H):
-              ratio = y / H
-              if ratio < 0.35:
-                  alpha = 0  # Top 35% = fully visible image
-              elif ratio < 0.55:
-                  alpha = int(255 * (ratio - 0.35) / 0.20 * 0.6)  # Fade in
-              else:
-                  alpha = int(255 * 0.88)  # Bottom 45% = dark for text
-              overlay_draw.line([(0, y), (W, y)], fill=(0, 0, 0, alpha))
-
-          img1 = img1.convert('RGBA')
-          img1 = Image.alpha_composite(img1, overlay)
-          img1 = img1.convert('RGB')
-          draw1 = ImageDraw.Draw(img1)
+          img1 = make_slide_with_bg([], 1)
+          d1 = ImageDraw.Draw(img1)
 
           # Top bar
-          draw1.rectangle([0, 0, W, 88], fill=(0, 0, 0, 200))
-          draw_text_with_shadow(draw1, (22, 28), 'OH BOY NEWS', FONT_BOLD_SM, WHITE)
+          d1.rectangle([0, 0, W, 85], fill=(0, 0, 0, 200))
+          bbox = d1.textbbox((0,0), 'OH BOY NEWS', font=FB28)
+          d1.text(((W - bbox[2] + bbox[0])//2, 26), 'OH BOY NEWS', font=FB28, fill=WHITE)
 
-          # Topic badge
-          topic_text = TOPIC.upper()
-          bbox = draw1.textbbox((0, 0), topic_text, font=FONT_BOLD_XS)
-          badge_w = bbox[2] - bbox[0] + 40
-          draw_rounded_rect(draw1, [40, 760, 40 + badge_w, 808], 8, ACCENT)
-          draw1.text((55, 772), topic_text, font=FONT_BOLD_XS, fill=WHITE)
+          # Topic badge - centered
+          topic_up = TOPIC.upper()
+          bbox = d1.textbbox((0,0), topic_up, font=FB22)
+          bw = bbox[2] - bbox[0] + 40
+          bx = (W - bw) // 2
+          draw_rounded_rect(d1, [bx, 760, bx+bw, 808], 8, ACCENT)
+          d1.text((bx+20, 772), topic_up, font=FB22, fill=WHITE)
 
           # Accent line
-          draw1.rectangle([40, 818, 160, 824], fill=ACCENT)
+          d1.rectangle([(W-120)//2, 818, (W+120)//2, 824], fill=ACCENT)
 
-          # Headline text
-          title_lines = wrap_text(TITLE, FONT_BOLD_LG, W - 80, draw1)
-          title_y = 835
+          # Headline - centered
+          title_lines = wrap_text(TITLE, FB42, W-80, d1)
+          ty = 840
           for line in title_lines[:4]:
-              draw_text_with_shadow(draw1, (40, title_y), line, FONT_BOLD_LG, WHITE)
-              title_y += 62
+              bbox = d1.textbbox((0,0), line, font=FB42)
+              tw = bbox[2] - bbox[0]
+              x = (W - tw) // 2
+              d1.text((x+2, ty+2), line, font=FB42, fill=(0,0,0))
+              d1.text((x, ty), line, font=FB42, fill=WHITE)
+              ty += 58
 
           # Bottom info
-          draw1.rectangle([0, H - 100, W, H], fill=(0, 0, 0, 220))
-          draw1.text((40, H - 76), f'{SOURCE}  -  {__import__("datetime").date.today().strftime("%b %d, %Y")}', font=FONT_REG_SM, fill=(200, 200, 200))
-          draw1.text((40, H - 46), 'Swipe up for full story >', font=FONT_REG_XS, fill=(160, 160, 160))
+          d1.rectangle([0, H-90, W, H], fill=(0,0,0,220))
+          src_text = f'{SOURCE}  -  {TODAY}'
+          bbox = d1.textbbox((0,0), src_text, font=FR22)
+          d1.text(((W - bbox[2] + bbox[0])//2, H-72), src_text, font=FR22, fill=(200,200,200))
+          swipe_text = 'Swipe up for full story >'
+          bbox = d1.textbbox((0,0), swipe_text, font=FR18)
+          d1.text(((W - bbox[2] + bbox[0])//2, H-42), swipe_text, font=FR18, fill=(150,150,150))
 
-          img1.save('/tmp/frames/frame_01.jpg', 'JPEG', quality=90)
+          img1.save('/tmp/frames/frame_01.jpg', 'JPEG', quality=92)
           print(f"Slide 1: {os.path.getsize('/tmp/frames/frame_01.jpg')} bytes")
 
           # ============================================================
-          # SLIDES 2-7 - Dark background + WHITE text
+          # SLIDES 2-7 - Same style as Slide 1 with image background
           # ============================================================
-          LABELS = ['WHAT HAPPENED', 'KEY DETAIL', 'MORE DETAILS', 'WHY IT MATTERS', 'REACTION', "WHAT'S NEXT"]
-          FALLBACKS = [
-              f'This story is developing. More details are emerging from {SOURCE}.',
-              f'According to {SOURCE}, this is one of the most important stories right now.',
-              'Multiple outlets have confirmed the key facts of this report.',
-              'The story has significant implications for global audiences.',
-              'Reactions from officials and the public are now coming in.',
-              'Further developments are expected in the coming hours.',
+          LABELS = [
+              'WHAT HAPPENED', 'KEY DETAIL', 'MORE DETAILS',
+              'WHY IT MATTERS', 'REACTION', "WHAT'S NEXT"
+          ]
+
+          # Only use sentences that have real content (not empty)
+          # No fallback "developing" text - use headline-based content instead
+          REAL_FALLBACKS = [
+              f'{TITLE} - More details are now emerging as the story develops.',
+              f'{SOURCE} reports: The situation surrounding this story continues to evolve.',
+              f'Key facts have been confirmed by multiple news sources including {SOURCE}.',
+              f'This story is expected to have major implications for those involved.',
+              f'Public and official reactions are now coming in regarding this development.',
+              f'Stay tuned to OH BOY NEWS for the latest updates on this breaking story.',
           ]
 
           for i in range(6):
-              slide_num = i + 2
+              sn = i + 2
               label = LABELS[i]
-              text = SENTENCES[i] if SENTENCES[i] else FALLBACKS[i]
+              # Use real sentence if available and not empty, else use title-based fallback
+              text = SENTENCES[i] if SENTENCES[i] and len(SENTENCES[i]) > 20 else REAL_FALLBACKS[i]
               progress = int((i + 1) * W / 7)
-              
-              print(f"Creating slide {slide_num}: {label}")
+              print(f"Creating slide {sn}: {label}")
 
-              img = Image.new('RGB', (W, H), DARK_BG)
-              draw = ImageDraw.Draw(img)
+              img = make_slide_with_bg([], sn)
+              d = ImageDraw.Draw(img)
 
-              # Accent top bar
-              draw.rectangle([0, 0, W, 6], fill=ACCENT)
+              # Top accent bar
+              d.rectangle([0, 0, W, 6], fill=ACCENT)
 
               # Nav bar
-              draw.rectangle([0, 0, W, 80], fill=(15, 15, 15))
+              d.rectangle([0, 0, W, 80], fill=(0,0,0,220))
 
-              # OH BOY NEWS
-              draw_text_with_shadow(draw, (20, 24), 'OH BOY NEWS', FONT_BOLD_SM, WHITE)
+              # OH BOY NEWS centered
+              bbox = d.textbbox((0,0), 'OH BOY NEWS', font=FB28)
+              d.text(((W-bbox[2]+bbox[0])//2, 22), 'OH BOY NEWS', font=FB28, fill=WHITE)
 
               # Slide counter
-              counter_text = f'{slide_num}/8'
-              bbox = draw.textbbox((0, 0), counter_text, font=FONT_REG_XS)
-              draw.text((W - bbox[2] - bbox[0] - 20, 28), counter_text, font=FONT_REG_XS, fill=GRAY)
+              cnt = f'{sn}/8'
+              bbox_cnt = d.textbbox((0,0), cnt, font=FR18)
+              d.text((W-bbox_cnt[2]-15, 28), cnt, font=FR18, fill=GRAY)
 
-              # Label badge
-              bbox = draw.textbbox((0, 0), label, font=FONT_BOLD_XS)
-              badge_w = bbox[2] - bbox[0] + 30
-              draw_rounded_rect(draw, [40, 105, 40 + badge_w, 148], 6, ACCENT)
-              draw.text((55, 116), label, font=FONT_BOLD_XS, fill=WHITE)
+              # Label badge - centered
+              bbox = d.textbbox((0,0), label, font=FB22)
+              bw = bbox[2] - bbox[0] + 40
+              bx = (W - bw) // 2
+              draw_rounded_rect(d, [bx, 100, bx+bw, 146], 6, ACCENT)
+              d.text((bx+20, 112), label, font=FB22, fill=WHITE)
 
-              # Accent line
-              draw.rectangle([40, 164, 160, 170], fill=ACCENT)
+              # Accent line centered
+              d.rectangle([(W-120)//2, 158, (W+120)//2, 164], fill=ACCENT)
 
-              # Body text - WHITE on dark
-              text_lines = wrap_text(text, FONT_REG_LG, W - 80, draw)
-              text_y = 190
-              for line in text_lines[:10]:
-                  draw.text((40, text_y), line, font=FONT_REG_LG, fill=WHITE)
-                  text_y += 52
+              # Body text - CENTERED
+              lines = wrap_text(text, FR40, W-80, d)
+              ty = 200
+              for line in lines[:8]:
+                  bbox = d.textbbox((0,0), line, font=FR40)
+                  tw = bbox[2] - bbox[0]
+                  x = (W - tw) // 2
+                  # Shadow
+                  d.text((x+2, ty+2), line, font=FR40, fill=(0,0,0))
+                  d.text((x, ty), line, font=FR40, fill=WHITE)
+                  ty += 54
 
-              # Bottom bar
-              draw.rectangle([0, H - 65, W, H], fill=(15, 15, 15))
-              draw.text((40, H - 46), SOURCE, font=FONT_REG_XS, fill=GRAY)
+              # Source centered bottom
+              d.rectangle([0, H-65, W, H], fill=(0,0,0,220))
+              bbox = d.textbbox((0,0), SOURCE, font=FR18)
+              d.text(((W-bbox[2]+bbox[0])//2, H-45), SOURCE, font=FR18, fill=GRAY)
 
               # Progress bar
-              draw.rectangle([0, H - 8, W, H], fill=(40, 40, 40))
-              draw.rectangle([0, H - 8, progress, H], fill=ACCENT)
+              d.rectangle([0, H-8, W, H], fill=(40,40,40))
+              d.rectangle([0, H-8, progress, H], fill=ACCENT)
 
-              img.save(f'/tmp/frames/frame_0{slide_num}.jpg', 'JPEG', quality=90)
-              print(f"Slide {slide_num}: {os.path.getsize(f'/tmp/frames/frame_0{slide_num}.jpg')} bytes")
+              img.save(f'/tmp/frames/frame_0{sn}.jpg', 'JPEG', quality=92)
+              print(f"Slide {sn}: {os.path.getsize(f'/tmp/frames/frame_0{sn}.jpg')} bytes")
 
           # ============================================================
           # SLIDE 8 - CTA with image
           # ============================================================
           print("Creating slide 8...")
-          img8 = bg_image.copy()
-
-          # Dark overlay
-          overlay8 = Image.new('RGBA', (W, H), (0, 0, 0, 185))
-          img8 = img8.convert('RGBA')
-          img8 = Image.alpha_composite(img8, overlay8)
-          img8 = img8.convert('RGB')
-          draw8 = ImageDraw.Draw(img8)
-
-          # OH BOY NEWS big
-          try:
-              font_huge = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 90)
-              font_sub = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 34)
-              font_hash = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 26)
-          except:
-              font_huge = FONT_BOLD_LG
-              font_sub = FONT_REG_MD
-              font_hash = FONT_REG_SM
+          img8 = make_slide_with_bg([], 8)
+          d8 = ImageDraw.Draw(img8)
 
           # OH BOY
-          bbox = draw8.textbbox((0, 0), 'OH BOY', font=font_huge)
-          x = (W - (bbox[2] - bbox[0])) // 2
-          draw_text_with_shadow(draw8, (x, 380), 'OH BOY', font_huge, WHITE, 3)
+          try:
+              f_huge = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 90)
+              f_sub  = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 34)
+              f_hash = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 26)
+          except:
+              f_huge = FB52
+              f_sub  = FR28
+              f_hash = FR22
 
-          # NEWS
-          bbox = draw8.textbbox((0, 0), 'NEWS', font=font_huge)
-          x = (W - (bbox[2] - bbox[0])) // 2
-          draw_text_with_shadow(draw8, (x, 480), 'NEWS', font_huge, ACCENT, 3)
+          for text, font, fill, y in [
+              ('OH BOY', f_huge, WHITE, 370),
+              ('NEWS', f_huge, ACCENT, 470),
+          ]:
+              bbox = d8.textbbox((0,0), text, font=font)
+              x = (W - (bbox[2]-bbox[0])) // 2
+              d8.text((x+3, y+3), text, font=font, fill=(0,0,0))
+              d8.text((x, y), text, font=font, fill=fill)
 
-          # Accent line
-          draw8.rectangle([200, 590, 520, 596], fill=ACCENT)
+          # Line
+          d8.rectangle([(W-200)//2, 585, (W+200)//2, 591], fill=ACCENT)
 
-          # Subscribe text
-          sub_text = 'SUBSCRIBE for daily breaking news!'
-          bbox = draw8.textbbox((0, 0), sub_text, font=font_sub)
-          x = (W - (bbox[2] - bbox[0])) // 2
-          draw8.text((x, 620), sub_text, font=font_sub, fill=WHITE)
+          # Subscribe
+          sub = 'SUBSCRIBE for daily breaking news!'
+          bbox = d8.textbbox((0,0), sub, font=f_sub)
+          d8.text(((W-(bbox[2]-bbox[0]))//2, 615), sub, font=f_sub, fill=WHITE)
 
           # Hashtags
-          hash_text = '#Shorts  #BreakingNews  #News'
-          bbox = draw8.textbbox((0, 0), hash_text, font=font_hash)
-          x = (W - (bbox[2] - bbox[0])) // 2
-          draw8.text((x, 700), hash_text, font=font_hash, fill=(200, 200, 200))
+          ht = '#Shorts  #BreakingNews  #News'
+          bbox = d8.textbbox((0,0), ht, font=f_hash)
+          d8.text(((W-(bbox[2]-bbox[0]))//2, 680), ht, font=f_hash, fill=(200,200,200))
 
-          img8.save('/tmp/frames/frame_08.jpg', 'JPEG', quality=90)
+          img8.save('/tmp/frames/frame_08.jpg', 'JPEG', quality=92)
           print(f"Slide 8: {os.path.getsize('/tmp/frames/frame_08.jpg')} bytes")
 
-          print("\nALL FRAMES CREATED:")
+          print("\nALL FRAMES:")
           import glob
           for f in sorted(glob.glob('/tmp/frames/*.jpg')):
               print(f"  {f}: {os.path.getsize(f)} bytes")
-
           PYEOF
-          echo "Python script done!"
+          echo "Python done!"
 
       - name: Create MP4 with FFmpeg
         run: |
-          # Create frame list
           > /tmp/frames.txt
           echo "file '/tmp/frames/frame_01.jpg'" >> /tmp/frames.txt
           echo "duration 3" >> /tmp/frames.txt
@@ -478,13 +473,9 @@ jobs:
           echo "duration 3" >> /tmp/frames.txt
           echo "file '/tmp/frames/frame_08.jpg'" >> /tmp/frames.txt
 
-          cat /tmp/frames.txt
-
           MSIZE=$(stat -c%s /tmp/audio/bg_music.mp3 2>/dev/null || echo 0)
-          echo "Music: $MSIZE bytes"
 
           if [ "$MSIZE" -gt 1000 ]; then
-            echo "Creating video WITH music..."
             ffmpeg -y \
               -f concat -safe 0 -i /tmp/frames.txt \
               -stream_loop -1 -i /tmp/audio/bg_music.mp3 \
@@ -492,11 +483,9 @@ jobs:
               -c:v libx264 -preset fast -crf 22 -pix_fmt yuv420p \
               -c:a aac -b:a 128k \
               -af "volume=0.35,afade=t=out:st=21:d=3" \
-              -shortest \
-              -movflags +faststart \
+              -shortest -movflags +faststart \
               /tmp/output/video.mp4
           else
-            echo "Creating video WITHOUT music..."
             ffmpeg -y \
               -f concat -safe 0 -i /tmp/frames.txt \
               -vf "scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=25" \
@@ -505,8 +494,7 @@ jobs:
               /tmp/output/video.mp4
           fi
 
-          echo "Video ready:"
-          ls -lh /tmp/output/video.mp4
+          echo "Video: $(stat -c%s /tmp/output/video.mp4) bytes"
 
       - name: Get YouTube Access Token
         id: yt_token
@@ -518,10 +506,7 @@ jobs:
             -d "grant_type=refresh_token")
           echo "Response: $RESPONSE"
           ACCESS_TOKEN=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('access_token',''))")
-          if [ -z "$ACCESS_TOKEN" ]; then
-            echo "ERROR: No token!"
-            exit 1
-          fi
+          if [ -z "$ACCESS_TOKEN" ]; then echo "ERROR!"; exit 1; fi
           echo "access_token=$ACCESS_TOKEN" >> $GITHUB_OUTPUT
           echo "Got token!"
 
@@ -529,31 +514,46 @@ jobs:
         id: yt_upload
         run: |
           ACCESS_TOKEN="${{ steps.yt_token.outputs.access_token }}"
-          TITLE="${{ github.event.inputs.title }}"
           VIDEO_PATH="/tmp/output/video.mp4"
           VIDEO_SIZE=$(stat -c%s "$VIDEO_PATH")
+          TITLE="${{ github.event.inputs.title }}"
           YT_TITLE="${TITLE:0:90} #Shorts"
 
-          python3 -c "
-          import json
-          title = '''$YT_TITLE'''.replace(\"'''\", '\"')
-          desc = '''$TITLE\n\nSubscribe for daily breaking news!\n\n#Shorts #BreakingNews #News #OHBOYNews'''.replace(\"'''\", '\"')
+          python3 << 'METAEOF'
+          import json, os
+          title = os.environ.get('YT_TITLE_VAR', 'OH BOY NEWS #Shorts')
           meta = {
-              'snippet': {
-                  'title': title[:100],
-                  'description': desc[:5000],
-                  'tags': ['Shorts', 'Breaking News', 'News', 'OH BOY News'],
-                  'categoryId': '25'
+              "snippet": {
+                  "title": title[:100],
+                  "description": f"Breaking News!\n\nSubscribe for daily breaking news!\n\n#Shorts #BreakingNews #News #OHBOYNews",
+                  "tags": ["Shorts","Breaking News","News","OH BOY News"],
+                  "categoryId": "25"
               },
-              'status': {
-                  'privacyStatus': 'public',
-                  'selfDeclaredMadeForKids': False
+              "status": {
+                  "privacyStatus": "public",
+                  "selfDeclaredMadeForKids": False
               }
           }
-          with open('/tmp/metadata.json', 'w') as f:
+          with open('/tmp/metadata.json','w') as f:
               json.dump(meta, f)
-          print('Metadata created!')
-          "
+          print("Metadata OK!")
+          METAEOF
+
+          # Simpler metadata approach
+          cat > /tmp/metadata.json << JSONEOF
+          {
+            "snippet": {
+              "title": "${YT_TITLE:0:100}",
+              "description": "Breaking News! Subscribe for daily updates!\n\n#Shorts #BreakingNews #News #OHBOYNews",
+              "tags": ["Shorts","Breaking News","News","OH BOY News"],
+              "categoryId": "25"
+            },
+            "status": {
+              "privacyStatus": "public",
+              "selfDeclaredMadeForKids": false
+            }
+          }
+          JSONEOF
 
           curl -s -D /tmp/headers.txt -X POST \
             "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status" \
@@ -569,7 +569,6 @@ jobs:
             cat /tmp/headers.txt
             exit 1
           fi
-          echo "Got upload URL!"
 
           RESULT=$(curl -s -X PUT "$UPLOAD_URL" \
             -H "Authorization: Bearer $ACCESS_TOKEN" \
@@ -577,7 +576,7 @@ jobs:
             -H "Content-Length: $VIDEO_SIZE" \
             --data-binary @"$VIDEO_PATH")
 
-          echo "Upload result: $RESULT"
+          echo "Result: $RESULT"
           VIDEO_ID=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null)
 
           if [ -z "$VIDEO_ID" ]; then
@@ -597,7 +596,6 @@ jobs:
             -d "video_id=${{ steps.yt_upload.outputs.video_id }}" \
             -d "yt_url=${{ steps.yt_upload.outputs.yt_url }}" \
             -d "status=success"
-          echo "WordPress notified!"
 
       - name: Notify WordPress failure
         if: failure()
@@ -605,4 +603,3 @@ jobs:
           curl -s -X POST "${{ github.event.inputs.callback_url }}" \
             -d "post_id=${{ github.event.inputs.post_id }}" \
             -d "status=failed"
-          echo "WordPress notified - failed!"
